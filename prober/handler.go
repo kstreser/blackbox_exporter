@@ -40,6 +40,8 @@ var (
 		"dns":  ProbeDNS,
 		"grpc": ProbeGRPC,
 	}
+
+	CounterMap = make(map[string]prometheus.Counter)
 )
 
 func Handler(w http.ResponseWriter, r *http.Request, c *config.Config, logger log.Logger,
@@ -87,6 +89,14 @@ func Handler(w http.ResponseWriter, r *http.Request, c *config.Config, logger lo
 		return
 	}
 
+	probeFailureCounter, exists := CounterMap[target]
+	if exists == false {
+		probeFailureCounter = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "probe_failures_total",
+			Help: "Counting the number of unsuccessful probes",
+		})
+	}
+
 	prober, ok := Probers[module.Prober]
 	if !ok {
 		http.Error(w, fmt.Sprintf("Unknown prober %q", module.Prober), http.StatusBadRequest)
@@ -113,6 +123,7 @@ func Handler(w http.ResponseWriter, r *http.Request, c *config.Config, logger lo
 
 	start := time.Now()
 	registry := prometheus.NewRegistry()
+	registry.Register(probeFailureCounter)
 	registry.MustRegister(probeSuccessGauge)
 	registry.MustRegister(probeDurationGauge)
 	success := prober(ctx, target, module, registry, sl)
@@ -122,8 +133,11 @@ func Handler(w http.ResponseWriter, r *http.Request, c *config.Config, logger lo
 		probeSuccessGauge.Set(1)
 		level.Info(sl).Log("msg", "Probe succeeded", "duration_seconds", duration)
 	} else {
+		probeFailureCounter.Inc()
 		level.Error(sl).Log("msg", "Probe failed", "duration_seconds", duration)
 	}
+
+	CounterMap[target] = probeFailureCounter
 
 	debugOutput := DebugOutput(&module, &sl.buffer, registry)
 	rh.Add(moduleName, target, debugOutput, success)
